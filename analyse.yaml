@@ -1,0 +1,24 @@
+# ForgeAI Static Analysis & Quality Configuration
+project:
+  name: ForgeAI
+  platform: android-kotlin-compose
+  architecture: clean-mvvm-modular
+  min_sdk: 24
+  target_sdk: 36
+
+rules:
+  security:
+    require_https_endpoints: true
+    forbid_hardcoded_secrets: true
+    require_keystore_encryption_for_api_keys: true
+    forbid_dynamic_code_loading: true
+    enforce_sandbox_permission_checks: true
+  code_quality:
+    max_file_lines_recommended: 500
+    require_explicit_error_states: true
+    forbid_demo_or_mock_data: true
+    forbid_unused_permissions: true
+  testing:
+    unit_test_task: ":app:testDebugUnitTest"
+    lint_task: ":app:lintDebug"
+    release_build_task: ":app:assembleRelease"

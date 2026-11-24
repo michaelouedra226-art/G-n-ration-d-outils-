@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">ForgeAI</string>
+    <string name="nav_atelier">Atelier</string>
+    <string name="nav_tools">Outils</string>
+    <string name="nav_apis">API</string>
+    <string name="nav_settings">Paramètres</string>
+    <string name="firebase_ai_notice">Gemini intégré requiert Firebase AI Logic (non activé). Ajoutez une clé fournisseur dans l\'onglet API pour exécuter les agents IA.</string>
+    <string name="error_offline">Connexion réseau indisponible. Vérifiez votre accès Internet.</string>
+</resources>

@@ -1,0 +1,6 @@
+{
+  "name": "ForgeAI",
+  "description": "Plateforme Android de génération et d'exécution sandboxée d'outils IA intelligents à partir du langage naturel.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
