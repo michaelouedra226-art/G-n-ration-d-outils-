@@ -35,7 +35,9 @@ enum class ToolPermission(val label: String, val description: String) {
     PDF_EXPORT("Export PDF", "Générer et exporter des documents PDF sur l'appareil"),
     FILE_PICKER("Sélecteur de fichiers", "Lire un document sélectionné par l'utilisateur via SAF"),
     IMAGE_PICKER("Sélecteur d'images", "Lire une image choisie via le Photo Picker Android"),
-    CLIPBOARD("Presse-papiers", "Copier le résultat généré vers le presse-papiers")
+    CLIPBOARD("Presse-papiers", "Copier le résultat généré vers le presse-papiers"),
+    NETWORK_FETCH("Requêtes HTTPS", "Effectuer des appels HTTPS publics sandboxés (API REST / JSON)"),
+    TEXT_TO_SPEECH("Synthèse vocale", "Lire à haute voix le résultat via le moteur vocal Android")
 }
 
 /**
@@ -62,7 +64,10 @@ enum class UiOutputType {
     KEY_VALUE_CARDS,
     PDF_PREVIEW_EXPORT,
     CHAT_TRANSCRIPT,
-    JSON_VIEW
+    JSON_VIEW,
+    TABLE_VIEW,
+    BAR_CHART,
+    LIST_ITEMS
 }
 
 /**
@@ -72,10 +77,18 @@ enum class WorkflowStepType {
     VALIDATE_INPUT,
     SANDBOX_EXPRESSION,
     TEMPLATE_FORMAT,
+    CONDITION_BRANCH,
+    TEXT_TRANSFORM,
+    DATE_TIME,
     AI_PROMPT,
+    HTTP_REQUEST,
     GENERATE_PDF,
     TOOL_STORAGE_SAVE,
     TOOL_STORAGE_LOAD,
+    LIST_STORAGE_APPEND,
+    LIST_STORAGE_READ,
+    SPEAK_TEXT,
+    CALL_TOOL,
     SET_OUTPUT
 }
 
@@ -121,7 +134,15 @@ data class WorkflowStepSpec(
     val preferredModel: String = "",
     val storageKey: String = "",
     val includeImageFieldId: String = "",
-    val temperature: Double = 0.4
+    val temperature: Double = 0.4,
+    val operation: String = "",
+    val operationParam: String = "",
+    val thenTemplate: String = "",
+    val elseTemplate: String = "",
+    val urlTemplate: String = "",
+    val httpMethod: String = "GET",
+    val requestHeadersJson: String = "",
+    val targetToolId: String = ""
 )
 
 /**

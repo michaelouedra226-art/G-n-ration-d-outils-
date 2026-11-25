@@ -74,28 +74,46 @@ class AndroidPdfGeneratorService(
                     color = Color.rgb(203, 213, 225)
                     strokeWidth = 1f
                 }
+                val h1Paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = Color.rgb(15, 23, 42)
+                    textSize = 15.5f
+                    typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+                }
+                val h2Paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = Color.rgb(30, 41, 59)
+                    textSize = 13.5f
+                    typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+                }
                 val bodyPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                     color = Color.rgb(30, 41, 59)
-                    textSize = 11.5f
+                    textSize = 11.2f
                     typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
+                }
+                val codePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = Color.rgb(15, 23, 42)
+                    textSize = 9.8f
+                    typeface = Typeface.create(Typeface.MONOSPACE, Typeface.NORMAL)
+                }
+                val codeBgPaint = Paint().apply {
+                    color = Color.rgb(241, 245, 249)
                 }
                 val footerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                     color = Color.rgb(100, 116, 139)
                     textSize = 9.5f
                 }
 
-                val wrappedLines = wrapParagraphs(body, bodyPaint, maxTextWidth)
+                val styledLines = buildStyledLines(body, maxTextWidth, h1Paint, h2Paint, bodyPaint, codePaint)
                 var lineIndex = 0
                 var pageNumber = 1
 
-                while (lineIndex < wrappedLines.size || pageNumber == 1) {
+                while (lineIndex < styledLines.size || pageNumber == 1) {
                     val pageInfo = PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageNumber).create()
                     val page = pdf.startPage(pageInfo)
                     val canvas = page.canvas
                     var y = 56f
 
                     if (pageNumber == 1) {
-                        val titleLines = wrapParagraphs(title, titlePaint, maxTextWidth)
+                        val titleLines = wrapText(title, titlePaint, maxTextWidth)
                         for (tLine in titleLines) {
                             canvas.drawText(tLine, marginX, y, titlePaint)
                             y += 26f
@@ -114,12 +132,42 @@ class AndroidPdfGeneratorService(
                     }
 
                     val bottomLimit = pageHeight - 54f
-                    while (lineIndex < wrappedLines.size && y <= bottomLimit) {
-                        val line = wrappedLines[lineIndex]
-                        if (line.isNotEmpty()) {
-                            canvas.drawText(line, marginX, y, bodyPaint)
+                    while (lineIndex < styledLines.size && y <= bottomLimit) {
+                        val entry = styledLines[lineIndex]
+                        when (entry.kind) {
+                            PdfLineKind.BLANK -> {
+                                y += 10f
+                            }
+                            PdfLineKind.H1 -> {
+                                y += 4f
+                                canvas.drawText(entry.text, marginX, y, h1Paint)
+                                y += 22f
+                            }
+                            PdfLineKind.H2 -> {
+                                y += 2f
+                                canvas.drawText(entry.text, marginX, y, h2Paint)
+                                y += 19f
+                            }
+                            PdfLineKind.BULLET -> {
+                                canvas.drawText(entry.text, marginX + 10f, y, bodyPaint)
+                                y += 16.5f
+                            }
+                            PdfLineKind.CODE -> {
+                                canvas.drawRect(
+                                    marginX - 4f,
+                                    y - 11f,
+                                    pageWidth - marginX + 4f,
+                                    y + 5f,
+                                    codeBgPaint
+                                )
+                                canvas.drawText(entry.text, marginX + 4f, y, codePaint)
+                                y += 15f
+                            }
+                            PdfLineKind.BODY -> {
+                                canvas.drawText(entry.text, marginX, y, bodyPaint)
+                                y += 16.5f
+                            }
                         }
-                        y += 17f
                         lineIndex++
                     }
 
@@ -130,7 +178,7 @@ class AndroidPdfGeneratorService(
                         footerPaint
                     )
                     pdf.finishPage(page)
-                    if (lineIndex >= wrappedLines.size) break
+                    if (lineIndex >= styledLines.size) break
                     pageNumber++
                 }
 
@@ -150,44 +198,90 @@ class AndroidPdfGeneratorService(
         }
     }
 
-    private fun wrapParagraphs(text: String, paint: Paint, maxWidth: Float): List<String> {
-        val result = mutableListOf<String>()
-        val normalized = text.replace("\r\n", "\n")
-        for (paragraph in normalized.split("\n")) {
-            val trimmed = paragraph.trimEnd()
-            if (trimmed.isEmpty()) {
-                result.add("")
+    private enum class PdfLineKind { BLANK, H1, H2, BULLET, CODE, BODY }
+
+    private data class StyledPdfLine(val kind: PdfLineKind, val text: String)
+
+    private fun buildStyledLines(
+        raw: String,
+        maxWidth: Float,
+        h1Paint: Paint,
+        h2Paint: Paint,
+        bodyPaint: Paint,
+        codePaint: Paint
+    ): List<StyledPdfLine> {
+        val out = mutableListOf<StyledPdfLine>()
+        val lines = raw.replace("\r\n", "\n").split("\n")
+        var inCode = false
+        for (line in lines) {
+            val trimmed = line.trimEnd()
+            if (trimmed.trimStart().startsWith("```")) {
+                inCode = !inCode
                 continue
             }
-            val words = trimmed.split(Regex("\\s+"))
-            var currentLine = StringBuilder()
-            for (word in words) {
-                val candidate = if (currentLine.isEmpty()) word else "${currentLine} $word"
-                if (paint.measureText(candidate) <= maxWidth) {
-                    currentLine = StringBuilder(candidate)
-                } else {
-                    if (currentLine.isNotEmpty()) {
-                        result.add(currentLine.toString())
-                    }
-                    if (paint.measureText(word) <= maxWidth) {
-                        currentLine = StringBuilder(word)
-                    } else {
-                        // Break extra-long tokens safely
-                        var chunk = StringBuilder()
-                        for (ch in word) {
-                            if (paint.measureText(chunk.toString() + ch) > maxWidth && chunk.isNotEmpty()) {
-                                result.add(chunk.toString())
-                                chunk = StringBuilder()
-                            }
-                            chunk.append(ch)
-                        }
-                        currentLine = chunk
+            if (inCode) {
+                wrapText(trimmed, codePaint, maxWidth - 8f).forEach {
+                    out.add(StyledPdfLine(PdfLineKind.CODE, it))
+                }
+                continue
+            }
+            val clean = trimmed.trimStart()
+            when {
+                clean.isEmpty() -> out.add(StyledPdfLine(PdfLineKind.BLANK, ""))
+                clean.startsWith("# ") -> wrapText(stripInlineMd(clean.drop(2)), h1Paint, maxWidth)
+                    .forEach { out.add(StyledPdfLine(PdfLineKind.H1, it)) }
+                clean.startsWith("## ") || clean.startsWith("### ") -> {
+                    val content = clean.removePrefix("### ").removePrefix("## ")
+                    wrapText(stripInlineMd(content), h2Paint, maxWidth)
+                        .forEach { out.add(StyledPdfLine(PdfLineKind.H2, it)) }
+                }
+                clean.startsWith("- ") || clean.startsWith("* ") -> {
+                    val bulletLines = wrapText(stripInlineMd(clean.drop(2)), bodyPaint, maxWidth - 18f)
+                    bulletLines.forEachIndexed { idx, part ->
+                        val prefix = if (idx == 0) "• " else "  "
+                        out.add(StyledPdfLine(PdfLineKind.BULLET, "$prefix$part"))
                     }
                 }
+                else -> wrapText(stripInlineMd(clean), bodyPaint, maxWidth)
+                    .forEach { out.add(StyledPdfLine(PdfLineKind.BODY, it)) }
             }
-            if (currentLine.isNotEmpty()) {
-                result.add(currentLine.toString())
+        }
+        return out
+    }
+
+    private fun stripInlineMd(text: String): String =
+        text.replace("**", "").replace("`", "")
+
+    private fun wrapText(text: String, paint: Paint, maxWidth: Float): List<String> {
+        if (text.isEmpty()) return listOf("")
+        val result = mutableListOf<String>()
+        val words = text.split(Regex("\\s+"))
+        var currentLine = StringBuilder()
+        for (word in words) {
+            val candidate = if (currentLine.isEmpty()) word else "$currentLine $word"
+            if (paint.measureText(candidate) <= maxWidth) {
+                currentLine = StringBuilder(candidate)
+            } else {
+                if (currentLine.isNotEmpty()) {
+                    result.add(currentLine.toString())
+                }
+                if (paint.measureText(word) <= maxWidth) {
+                    currentLine = StringBuilder(word)
+                } else {
+                    var chunk = StringBuilder()
+                    for (ch in word) {
+                        if (paint.measureText(chunk.toString() + ch) > maxWidth && chunk.isNotEmpty()) {
+                            result.add(chunk.toString())
+                            chunk = StringBuilder()
+                        }
+                        chunk.append(ch)
+                    }
+                    currentLine = chunk
+                }
             }
+        }
+        if (currentLine.isNotEmpty()) {
+            result.add(currentLine.toString())
         }
         return result
     }

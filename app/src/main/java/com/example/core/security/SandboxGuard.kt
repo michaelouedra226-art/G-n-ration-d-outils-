@@ -13,12 +13,14 @@ import java.net.URI
 object SandboxGuard {
 
     const val MAX_WORKFLOW_STEPS = 25
+    const val MAX_TOOL_CALL_DEPTH = 3
     const val MAX_INPUT_TEXT_LENGTH = 100_000
     const val MAX_STORAGE_KEY_LENGTH = 128
     const val MAX_STORAGE_VALUE_LENGTH = 64_000
     const val DEFAULT_EXECUTION_TIMEOUT_MS = 60_000L
 
     private val SAFE_ID_REGEX = Regex("^[a-zA-Z0-9_\\-]{1,64}$")
+    private val PRIVATE_172_REGEX = Regex("^172\\.(1[6-9]|2[0-9]|3[0-1])\\..*")
     private val DANGEROUS_TEXT_PATTERNS = listOf(
         Regex("(?i)<script\\b"),
         Regex("(?i)javascript:"),
@@ -64,24 +66,32 @@ object SandboxGuard {
     }
 
     /**
-     * Validates that a custom API base URL uses HTTPS and targets a valid public host.
+     * Validates that an outbound URL uses HTTPS and targets a public host (SSRF protection).
      */
     fun validateHttpsEndpoint(url: String): Result<String> = runCatching {
         val trimmed = url.trim().trimEnd('/')
-        require(trimmed.isNotBlank()) { "L'URL du fournisseur ne peut pas être vide." }
+        require(trimmed.isNotBlank()) { "L'URL ne peut pas être vide." }
         val uri = URI(trimmed)
         require(uri.scheme.equals("https", ignoreCase = true)) {
             "Seules les connexions chiffrées HTTPS sont autorisées."
         }
-        val host = uri.host?.lowercase()
+        val host = uri.host?.lowercase()?.trim('[', ']')
             ?: throw IllegalArgumentException("Nom d'hôte manquant dans l'URL.")
         require(
             host != "localhost" &&
                 host != "127.0.0.1" &&
+                host != "::1" &&
                 host != "0.0.0.0" &&
                 host != "169.254.169.254" &&
+                !host.endsWith(".local") &&
+                !host.endsWith(".internal") &&
                 !host.startsWith("10.") &&
-                !host.startsWith("192.168.")
+                !host.startsWith("192.168.") &&
+                !host.startsWith("169.254.") &&
+                !host.startsWith("fc") &&
+                !host.startsWith("fd") &&
+                !host.startsWith("fe80:") &&
+                !PRIVATE_172_REGEX.matches(host)
         ) {
             "Hôte réseau privé ou local interdit ($host)."
         }

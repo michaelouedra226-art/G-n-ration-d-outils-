@@ -50,17 +50,21 @@ class ForgeContainer(context: Context) {
         builtInGeminiNotice = builtInGeminiNotice
     )
 
-    val multiAgentForgePipeline = MultiAgentForgePipeline(
-        apiRouterService = apiRouterService,
-        moshi = moshi
-    )
-
     val pdfGenerator = AndroidPdfGeneratorService(appContext)
 
     val sandboxedToolRuntime = SandboxedToolRuntime(
         context = appContext,
         toolRepository = toolRepository,
         apiRouterService = apiRouterService,
-        pdfGenerator = pdfGenerator
+        pdfGenerator = pdfGenerator,
+        networkChecker = networkChecker
+    )
+
+    val multiAgentForgePipeline = MultiAgentForgePipeline(
+        apiRouterService = apiRouterService,
+        moshi = moshi,
+        dryRunVerifier = { manifest, sampleInputs ->
+            sandboxedToolRuntime.dryRunDeterministic(manifest, sampleInputs)
+        }
     )
 }

@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.core.ai.AgentLogItem
 import com.example.core.ai.ForgeAgentRole
+import com.example.core.ai.ForgeAutonomyMode
 import com.example.core.ai.ForgePipelineEvent
 import com.example.core.ai.MultiAgentForgePipeline
 import com.example.core.ai.ProviderProtocol
@@ -29,6 +30,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.util.UUID
@@ -45,7 +47,8 @@ sealed interface ForgeUiState {
         val tool: InstalledTool,
         val logs: List<AgentLogItem>,
         val providerInfo: String,
-        val totalLatencyMs: Long
+        val totalLatencyMs: Long,
+        val allTools: List<InstalledTool> = listOf(tool)
     ) : ForgeUiState
 
     data class Error(
@@ -77,6 +80,9 @@ class ForgeAtelierViewModel(
     private val _manualError = MutableStateFlow<String?>(null)
     val manualError: StateFlow<String?> = _manualError.asStateFlow()
 
+    private val _autonomyMode = MutableStateFlow(ForgeAutonomyMode.AUTONOMOUS)
+    val autonomyMode: StateFlow<ForgeAutonomyMode> = _autonomyMode.asStateFlow()
+
     val settings: StateFlow<ForgeSettings> = preferencesRepository.settings
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), ForgeSettings())
 
@@ -105,6 +111,10 @@ class ForgeAtelierViewModel(
         _prompt.value = newValue
     }
 
+    fun onAutonomyModeChanged(mode: ForgeAutonomyMode) {
+        _autonomyMode.value = mode
+    }
+
     fun resetState() {
         _forgeState.value = ForgeUiState.Idle
         _manualError.value = null
@@ -123,11 +133,17 @@ class ForgeAtelierViewModel(
 
         viewModelScope.launch {
             val currentSettings = settings.value
+            val existingToolsSummary = runCatching {
+                toolRepository.observeTools().first().map { it.manifest.id to it.manifest.name }
+            }.getOrDefault(emptyList())
+
             try {
-                pipeline.forgeTool(
+                pipeline.forgeAutonomously(
                     userPrompt = cleanPrompt,
                     authorName = currentSettings.authorName,
-                    strategy = currentSettings.loadBalancingStrategy
+                    strategy = currentSettings.loadBalancingStrategy,
+                    autonomyMode = _autonomyMode.value,
+                    existingToolsSummary = existingToolsSummary
                 ).collect { event ->
                     when (event) {
                         is ForgePipelineEvent.Progress -> {
@@ -138,29 +154,36 @@ class ForgeAtelierViewModel(
                             )
                         }
                         is ForgePipelineEvent.Success -> {
-                            val saved = toolRepository.saveTool(
-                                manifest = event.manifest,
-                                changelogSummary = "Forgé via pipeline multi-agents",
-                                changelogDetails = "Prompt : ${cleanPrompt.take(180)} | Provider : ${event.providerInfo}"
-                            )
-                            saved.fold(
-                                onSuccess = { installed ->
-                                    _prompt.value = ""
-                                    _forgeState.value = ForgeUiState.ForgedSuccess(
-                                        tool = installed,
-                                        logs = event.logs,
-                                        providerInfo = event.providerInfo,
-                                        totalLatencyMs = event.totalLatencyMs
-                                    )
-                                },
-                                onFailure = { err ->
-                                    _forgeState.value = ForgeUiState.Error(
-                                        message = err.localizedMessage ?: "Échec de sauvegarde du plugin.",
-                                        showFirebaseOrApiNotice = false,
-                                        logs = event.logs
-                                    )
-                                }
-                            )
+                            val installedList = mutableListOf<InstalledTool>()
+                            var saveFailure: Throwable? = null
+                            for (manifest in event.allManifests) {
+                                val res = toolRepository.saveTool(
+                                    manifest = manifest,
+                                    changelogSummary = "Forgé via pipeline multi-agents autonome",
+                                    changelogDetails = "Prompt : ${cleanPrompt.take(180)} | Provider : ${event.providerInfo}"
+                                )
+                                res.fold(
+                                    onSuccess = { installedList.add(it) },
+                                    onFailure = { saveFailure = it }
+                                )
+                            }
+
+                            if (installedList.isNotEmpty()) {
+                                _prompt.value = ""
+                                _forgeState.value = ForgeUiState.ForgedSuccess(
+                                    tool = installedList.first(),
+                                    logs = event.logs,
+                                    providerInfo = event.providerInfo,
+                                    totalLatencyMs = event.totalLatencyMs,
+                                    allTools = installedList
+                                )
+                            } else {
+                                _forgeState.value = ForgeUiState.Error(
+                                    message = saveFailure?.localizedMessage ?: "Échec de sauvegarde du plugin.",
+                                    showFirebaseOrApiNotice = false,
+                                    logs = event.logs
+                                )
+                            }
                         }
                         is ForgePipelineEvent.Failure -> {
                             _forgeState.value = ForgeUiState.Error(

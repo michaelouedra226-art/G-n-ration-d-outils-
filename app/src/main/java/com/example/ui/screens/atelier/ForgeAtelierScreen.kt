@@ -58,6 +58,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.core.ai.AgentLogItem
 import com.example.core.ai.AgentStepStatus
 import com.example.core.ai.ForgeAgentRole
+import com.example.core.ai.ForgeAutonomyMode
 import com.example.domain.manifest.ToolCategory
 import com.example.domain.manifest.UiFieldType
 import com.example.ui.components.FirebaseAiNoticeBanner
@@ -79,6 +80,7 @@ fun ForgeAtelierScreen(
     val forgeState by viewModel.forgeState.collectAsStateWithLifecycle()
     val readiness by viewModel.providerReadiness.collectAsStateWithLifecycle()
     val manualError by viewModel.manualError.collectAsStateWithLifecycle()
+    val autonomyMode by viewModel.autonomyMode.collectAsStateWithLifecycle()
     var showManualDialog by remember { mutableStateOf(false) }
 
     Box(
@@ -155,11 +157,31 @@ fun ForgeAtelierScreen(
                             .testTag("forge_prompt_input"),
                         label = { Text("Que souhaitez-vous créer ?") },
                         placeholder = {
-                            Text("Ex : Crée un outil de synthèse de texte avec export PDF A4...")
+                            Text("Ex : Crée un suivi de dépenses avec graphiques, un client API crypto ou un générateur PDF...")
                         },
                         minLines = 3,
                         maxLines = 6,
                         enabled = forgeState !is ForgeUiState.Forging
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        ForgeAutonomyMode.entries.forEach { mode ->
+                            FilterChip(
+                                selected = autonomyMode == mode,
+                                onClick = { viewModel.onAutonomyModeChanged(mode) },
+                                enabled = forgeState !is ForgeUiState.Forging,
+                                label = { Text(mode.label) },
+                                modifier = Modifier.testTag("autonomy_mode_${mode.name}")
+                            )
+                        }
+                    }
+                    Text(
+                        text = autonomyMode.description,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Spacer(modifier = Modifier.height(12.dp))
                     Row(
@@ -240,7 +262,11 @@ fun ForgeAtelierScreen(
                                     )
                                     Column(modifier = Modifier.weight(1f)) {
                                         Text(
-                                            text = "Plugin prêt : ${state.tool.manifest.name}",
+                                            text = if (state.allTools.size > 1) {
+                                                "Suite autonome prête (${state.allTools.size} plugins)"
+                                            } else {
+                                                "Plugin prêt : ${state.tool.manifest.name}"
+                                            },
                                             style = MaterialTheme.typography.titleMedium,
                                             color = MaterialTheme.colorScheme.onSurface
                                         )
@@ -252,27 +278,61 @@ fun ForgeAtelierScreen(
                                     }
                                 }
                                 Spacer(modifier = Modifier.height(10.dp))
-                                Text(
-                                    text = state.tool.manifest.description,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                                Spacer(modifier = Modifier.height(12.dp))
-                                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                    Button(
-                                        onClick = { onOpenTool(state.tool.manifest.id) },
-                                        modifier = Modifier.testTag("open_forged_tool_button")
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Outlined.PlayArrow,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                        Spacer(modifier = Modifier.size(6.dp))
-                                        Text("Utiliser l'outil")
+                                if (state.allTools.size > 1) {
+                                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        state.allTools.forEach { built ->
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    Text(
+                                                        text = built.manifest.name,
+                                                        style = MaterialTheme.typography.titleSmall
+                                                    )
+                                                    Text(
+                                                        text = built.manifest.description,
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    )
+                                                }
+                                                OutlinedButton(
+                                                    onClick = { onOpenTool(built.manifest.id) },
+                                                    modifier = Modifier.padding(start = 8.dp)
+                                                ) {
+                                                    Text("Ouvrir")
+                                                }
+                                            }
+                                        }
                                     }
+                                    Spacer(modifier = Modifier.height(10.dp))
                                     TextButton(onClick = viewModel::resetState) {
                                         Text("Nouvelle forge")
+                                    }
+                                } else {
+                                    Text(
+                                        text = state.tool.manifest.description,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                        Button(
+                                            onClick = { onOpenTool(state.tool.manifest.id) },
+                                            modifier = Modifier.testTag("open_forged_tool_button")
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Outlined.PlayArrow,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                            Spacer(modifier = Modifier.size(6.dp))
+                                            Text("Utiliser l'outil")
+                                        }
+                                        TextButton(onClick = viewModel::resetState) {
+                                            Text("Nouvelle forge")
+                                        }
                                     }
                                 }
                             }

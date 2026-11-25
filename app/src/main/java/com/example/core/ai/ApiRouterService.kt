@@ -106,11 +106,13 @@ class ApiRouterService(
                     return Result.failure(gwError)
                 }
                 AiErrorKind.QUOTA_EXCEEDED -> {
+                    val cooldown = (gwError.retryAfterMs ?: QUOTA_COOLDOWN_MS)
+                        .coerceIn(5_000L, 300_000L)
                     apiManagerRepository.recordKeyError(
                         keyId = candidate.key.id,
-                        statusLabel = "Quota / 429",
+                        statusLabel = "Quota / 429 (${cooldown / 1000}s)",
                         errorMessage = gwError.message,
-                        cooldownMs = QUOTA_COOLDOWN_MS
+                        cooldownMs = cooldown
                     )
                 }
                 AiErrorKind.INVALID_API_KEY, AiErrorKind.PERMISSION_DENIED -> {
@@ -197,6 +199,38 @@ class ApiRouterService(
             )
         }
         return result
+    }
+
+    /**
+     * Queries the provider's `/models` endpoint using its highest-priority active key.
+     */
+    suspend fun fetchAvailableModels(providerId: String): Result<List<String>> {
+        val snapshot = apiManagerRepository.getProvidersSnapshot()
+        val pwk = snapshot.firstOrNull { it.provider.id == providerId }
+            ?: return Result.failure(IllegalArgumentException("Fournisseur introuvable."))
+        val providerType = ProviderType.entries.firstOrNull { it.name == pwk.provider.providerType }
+            ?: ProviderType.OPENAI_COMPATIBLE
+        if (providerType.protocol == ProviderProtocol.FIREBASE_AI_PLACEHOLDER) {
+            return Result.failure(builtInGeminiNotice.asError())
+        }
+        val key = pwk.keys.filter { it.enabled }.minByOrNull { it.priority }
+            ?: pwk.keys.minByOrNull { it.priority }
+            ?: return Result.failure(IllegalStateException("Ajoutez au moins une clé API à ce fournisseur pour interroger ses modèles."))
+
+        val rawKey = runCatching { apiManagerRepository.decryptKey(key) }.getOrElse {
+            return Result.failure(IllegalStateException("Impossible de déchiffrer la clé dans le Keystore."))
+        }
+        val endpoint = ResolvedEndpoint(
+            providerId = pwk.provider.id,
+            providerName = pwk.provider.name,
+            providerType = providerType,
+            baseUrl = pwk.provider.baseUrl,
+            model = providerType.defaultModels.firstOrNull().orEmpty(),
+            keyId = key.id,
+            keyLabel = key.label,
+            apiKey = rawKey
+        )
+        return aiGateway.fetchAvailableModels(endpoint)
     }
 
     private data class Candidate(

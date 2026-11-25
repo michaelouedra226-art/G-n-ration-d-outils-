@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -45,6 +46,18 @@ import com.example.ui.theme.ForgeAmber
 import com.example.ui.theme.ForgeEmerald
 import com.example.ui.theme.ForgeRose
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material.icons.outlined.FileUpload
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.platform.LocalContext
+import kotlinx.coroutines.launch
+
 @Composable
 fun ToolsCatalogScreen(
     viewModel: ToolsViewModel,
@@ -57,31 +70,94 @@ fun ToolsCatalogScreen(
     val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
     val selectedCategory by viewModel.selectedCategory.collectAsStateWithLifecycle()
 
-    Box(
-        modifier = modifier.fillMaxSize(),
-        contentAlignment = Alignment.TopCenter
-    ) {
-        LazyColumn(
-            modifier = Modifier
-                .widthIn(max = 720.dp)
-                .fillMaxSize(),
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 20.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            item {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text(
-                        text = "Plugins installés",
-                        style = MaterialTheme.typography.headlineMedium,
-                        color = MaterialTheme.colorScheme.onBackground
-                    )
-                    Text(
-                        text = "Chaque outil est isolé dans un sandbox indépendant avec ses propres permissions et son historique de versions.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+    val context = LocalContext.current
+    val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
+
+    val importJsonLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            runCatching {
+                context.contentResolver.openInputStream(uri)?.use { stream ->
+                    stream.bufferedReader(Charsets.UTF_8).readText()
+                } ?: error("Impossible de lire ce fichier.")
+            }.onSuccess { rawJson ->
+                viewModel.importToolFromJson(rawJson) { res ->
+                    res.fold(
+                        onSuccess = { imported ->
+                            scope.launch {
+                                snackbarHostState.showSnackbar("Plugin « ${imported.manifest.name} » importé.")
+                            }
+                        },
+                        onFailure = { err ->
+                            scope.launch {
+                                snackbarHostState.showSnackbar("Import refusé : ${err.localizedMessage}")
+                            }
+                        }
                     )
                 }
+            }.onFailure { err ->
+                scope.launch {
+                    snackbarHostState.showSnackbar("Erreur lecture fichier : ${err.localizedMessage}")
+                }
             }
+        }
+    }
+
+    Scaffold(
+        modifier = modifier.fillMaxSize(),
+        contentWindowInsets = WindowInsets(0.dp),
+        snackbarHost = { SnackbarHost(snackbarHostState) }
+    ) { innerPadding ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding),
+            contentAlignment = Alignment.TopCenter
+        ) {
+            LazyColumn(
+                modifier = Modifier
+                    .widthIn(max = 720.dp)
+                    .fillMaxSize(),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 20.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.Top
+                    ) {
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                text = "Plugins installés",
+                                style = MaterialTheme.typography.headlineMedium,
+                                color = MaterialTheme.colorScheme.onBackground
+                            )
+                            Text(
+                                text = "Chaque outil est isolé dans un sandbox indépendant avec ses propres permissions et son historique de versions.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                importJsonLauncher.launch(arrayOf("application/json", "text/plain"))
+                            },
+                            modifier = Modifier
+                                .padding(start = 8.dp)
+                                .testTag("import_tool_json_button")
+                        ) {
+                            Icon(Icons.Outlined.FileUpload, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.size(6.dp))
+                            Text("Importer")
+                        }
+                    }
+                }
 
             if (tools.isNotEmpty() || searchQuery.isNotBlank() || selectedCategory != null) {
                 item {
@@ -155,6 +231,7 @@ fun ToolsCatalogScreen(
                     )
                 }
             }
+        }
         }
     }
 }

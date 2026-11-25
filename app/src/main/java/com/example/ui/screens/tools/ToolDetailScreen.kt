@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -55,6 +56,18 @@ import com.example.ui.theme.ForgeRose
 import com.example.ui.theme.JetBrainsMonoFontFamily
 import java.text.SimpleDateFormat
 import java.util.Date
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.FileDownload
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.platform.LocalContext
+import com.example.core.ai.AgentStepStatus
+import kotlinx.coroutines.launch
 import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
@@ -76,17 +89,55 @@ fun ToolDetailScreen(
     val storageEntries by remember(toolId) { viewModel.observeToolStorage(toolId) }
         .collectAsStateWithLifecycle()
 
+    val refineState by viewModel.refineState.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
+
     var showDeleteDialog by remember { mutableStateOf(false) }
     var showManifestEditor by remember { mutableStateOf(false) }
+    var showRefineDialog by remember { mutableStateOf(false) }
+    var refinePromptDraft by remember { mutableStateOf("") }
     var manifestJsonDraft by remember { mutableStateOf("") }
     var changelogSummaryDraft by remember { mutableStateOf("") }
     var editorError by remember { mutableStateOf<String?>(null) }
 
+    val exportJsonLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/json")
+    ) { destUri ->
+        val currentTool = toolState
+        if (destUri != null && currentTool != null) {
+            runCatching {
+                val jsonText = viewModel.serializeManifest(currentTool)
+                context.contentResolver.openOutputStream(destUri)?.use { out ->
+                    out.write(jsonText.toByteArray(Charsets.UTF_8))
+                }
+            }.onSuccess {
+                scope.launch { snackbarHostState.showSnackbar("Manifeste exporté en JSON.") }
+            }.onFailure { err ->
+                scope.launch { snackbarHostState.showSnackbar("Échec export JSON : ${err.localizedMessage}") }
+            }
+        }
+    }
+
+    LaunchedEffect(refineState) {
+        if (refineState is RefineToolState.Success) {
+            val ver = (refineState as RefineToolState.Success).newVersion
+            showRefineDialog = false
+            refinePromptDraft = ""
+            viewModel.resetRefineState()
+            snackbarHostState.showSnackbar("Plugin mis à jour en v$ver")
+        }
+    }
+
     val dateFormatter = remember { SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.FRANCE) }
 
     Scaffold(
+        contentWindowInsets = WindowInsets(0.dp),
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
+                windowInsets = WindowInsets(0.dp),
                 title = { Text(toolState?.manifest?.name ?: "Détails du plugin") },
                 navigationIcon = {
                     IconButton(onClick = onBack, modifier = Modifier.testTag("detail_back_button")) {
@@ -170,11 +221,26 @@ fun ToolDetailScreen(
                             }
                         }
                         Spacer(modifier = Modifier.height(12.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
                             Button(onClick = onRunTool) {
                                 Icon(Icons.Outlined.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
                                 Spacer(modifier = Modifier.size(6.dp))
                                 Text("Exécuter")
+                            }
+                            OutlinedButton(
+                                onClick = {
+                                    viewModel.resetRefineState()
+                                    refinePromptDraft = ""
+                                    showRefineDialog = true
+                                },
+                                modifier = Modifier.testTag("refine_with_ai_button")
+                            ) {
+                                Icon(Icons.Outlined.AutoAwesome, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.size(6.dp))
+                                Text("Améliorer avec l'IA")
                             }
                             OutlinedButton(
                                 onClick = {
@@ -187,7 +253,21 @@ fun ToolDetailScreen(
                             ) {
                                 Icon(Icons.Outlined.Edit, contentDescription = null, modifier = Modifier.size(18.dp))
                                 Spacer(modifier = Modifier.size(6.dp))
-                                Text("Éditer manifeste")
+                                Text("Éditer JSON")
+                            }
+                            OutlinedButton(
+                                onClick = {
+                                    val safeName = manifest.name.lowercase(Locale.ROOT)
+                                        .replace(Regex("[^a-z0-9]+"), "_")
+                                        .trim('_')
+                                        .ifBlank { "plugin" }
+                                    exportJsonLauncher.launch("${safeName}_v${manifest.version}.json")
+                                },
+                                modifier = Modifier.testTag("export_manifest_button")
+                            ) {
+                                Icon(Icons.Outlined.FileDownload, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.size(6.dp))
+                                Text("Exporter JSON")
                             }
                         }
                     }
@@ -393,6 +473,79 @@ fun ToolDetailScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showManifestEditor = false }) { Text("Annuler") }
+            }
+        )
+    }
+
+    if (showRefineDialog) {
+        val currentTool = toolState
+        val isRunning = refineState is RefineToolState.Running
+        AlertDialog(
+            onDismissRequest = { if (!isRunning) showRefineDialog = false },
+            title = { Text("Améliorer avec l'IA") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = "Décrivez la modification souhaitée. Les agents IA mettront à jour le manifeste en incrémentant automatiquement la version.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = refinePromptDraft,
+                        onValueChange = { refinePromptDraft = it },
+                        enabled = !isRunning,
+                        label = { Text("Évolution souhaitée") },
+                        placeholder = { Text("Ex : Ajoute un export PDF et un champ langue cible") },
+                        minLines = 3,
+                        maxLines = 6,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("refine_prompt_input")
+                    )
+                    when (val st = refineState) {
+                        is RefineToolState.Running -> {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                                Text(st.providerInfo, style = MaterialTheme.typography.labelSmall)
+                            }
+                            st.logs.filter { it.status != AgentStepStatus.PENDING }.takeLast(3).forEach { log ->
+                                Text(
+                                    text = "[${log.role.badge}] ${log.summary}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                        is RefineToolState.Error -> {
+                            Text(st.message, style = MaterialTheme.typography.bodySmall, color = ForgeRose)
+                        }
+                        else -> Unit
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    enabled = !isRunning && currentTool != null,
+                    onClick = {
+                        if (currentTool != null) {
+                            viewModel.refineToolWithAi(currentTool, refinePromptDraft)
+                        }
+                    },
+                    modifier = Modifier.testTag("confirm_refine_button")
+                ) {
+                    Text(if (isRunning) "Analyse..." else "Mettre à jour")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    enabled = !isRunning,
+                    onClick = { showRefineDialog = false }
+                ) {
+                    Text("Annuler")
+                }
             }
         )
     }

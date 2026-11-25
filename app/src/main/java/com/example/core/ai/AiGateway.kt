@@ -21,6 +21,7 @@ import java.util.concurrent.TimeUnit
 interface AiGateway {
     suspend fun complete(request: AiRequest, endpoint: ResolvedEndpoint): Result<AiResponse>
     suspend fun testConnection(endpoint: ResolvedEndpoint): ConnectionTestResult
+    suspend fun fetchAvailableModels(endpoint: ResolvedEndpoint): Result<List<String>>
 }
 
 /**
@@ -79,8 +80,9 @@ class OkHttpAiGateway(
                     val latencyMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNs)
                     val rawBody = response.body?.string().orEmpty()
                     if (!response.isSuccessful) {
+                        val retryAfterMs = parseRetryAfterMs(response.header("Retry-After"))
                         return@withContext Result.failure(
-                            classifyHttpError(response.code, rawBody, endpoint.providerName)
+                            classifyHttpError(response.code, rawBody, endpoint.providerName, retryAfterMs)
                         )
                     }
 
@@ -155,6 +157,100 @@ class OkHttpAiGateway(
         )
     }
 
+    override suspend fun fetchAvailableModels(endpoint: ResolvedEndpoint): Result<List<String>> =
+        withContext(Dispatchers.IO) {
+            if (endpoint.providerType.protocol == ProviderProtocol.FIREBASE_AI_PLACEHOLDER) {
+                return@withContext Result.failure(builtInGeminiNotice.asError())
+            }
+            if (!networkChecker.isOnline()) {
+                return@withContext Result.failure(
+                    AiGatewayException(
+                        kind = AiErrorKind.OFFLINE,
+                        message = "Hors ligne : aucune connexion Internet active."
+                    )
+                )
+            }
+
+            try {
+                val url = "${endpoint.baseUrl.trimEnd('/')}/models"
+                val builder = Request.Builder().url(url).get()
+                when (endpoint.providerType.protocol) {
+                    ProviderProtocol.OPENAI_COMPATIBLE -> {
+                        builder.addHeader("Authorization", "Bearer ${endpoint.apiKey}")
+                        if (endpoint.providerType == ProviderType.OPENROUTER) {
+                            builder.addHeader("X-Title", "ForgeAI Android")
+                        }
+                    }
+                    ProviderProtocol.ANTHROPIC_MESSAGES -> {
+                        builder.addHeader("x-api-key", endpoint.apiKey)
+                        builder.addHeader("anthropic-version", "2023-06-01")
+                    }
+                    ProviderProtocol.FIREBASE_AI_PLACEHOLDER ->
+                        return@withContext Result.failure(builtInGeminiNotice.asError())
+                }
+
+                client.newCall(builder.build()).execute().use { response ->
+                    val rawBody = response.body?.string().orEmpty()
+                    if (!response.isSuccessful) {
+                        return@withContext Result.failure(
+                            classifyHttpError(
+                                code = response.code,
+                                body = rawBody,
+                                providerName = endpoint.providerName,
+                                retryAfterMs = parseRetryAfterMs(response.header("Retry-After"))
+                            )
+                        )
+                    }
+                    val root = JSONObject(rawBody)
+                    val dataArray = root.optJSONArray("data")
+                        ?: return@withContext Result.failure(
+                            AiGatewayException(
+                                kind = AiErrorKind.INVALID_RESPONSE,
+                                message = "Le fournisseur ${endpoint.providerName} n'a pas renvoyé de liste de modèles."
+                            )
+                        )
+                    val models = mutableListOf<String>()
+                    for (i in 0 until dataArray.length()) {
+                        val id = dataArray.optJSONObject(i)?.optString("id")?.trim().orEmpty()
+                        if (id.isNotBlank()) models.add(id)
+                    }
+                    if (models.isEmpty()) {
+                        return@withContext Result.failure(
+                            AiGatewayException(
+                                kind = AiErrorKind.INVALID_RESPONSE,
+                                message = "Aucun modèle disponible renvoyé par ${endpoint.providerName}."
+                            )
+                        )
+                    }
+                    Result.success(models.distinct().sorted())
+                }
+            } catch (e: SocketTimeoutException) {
+                Result.failure(
+                    AiGatewayException(
+                        kind = AiErrorKind.TIMEOUT,
+                        message = "Délai dépassé lors de la récupération des modèles.",
+                        cause = e
+                    )
+                )
+            } catch (e: IOException) {
+                Result.failure(
+                    AiGatewayException(
+                        kind = AiErrorKind.SERVER_ERROR,
+                        message = "Erreur réseau (${endpoint.providerName}) : ${e.localizedMessage ?: "connexion interrompue"}",
+                        cause = e
+                    )
+                )
+            } catch (e: Exception) {
+                Result.failure(
+                    AiGatewayException(
+                        kind = AiErrorKind.INVALID_RESPONSE,
+                        message = "Impossible de lire la liste des modèles : ${e.localizedMessage}",
+                        cause = e
+                    )
+                )
+            }
+        }
+
     private fun buildOpenAiRequest(request: AiRequest, endpoint: ResolvedEndpoint): Request {
         val url = "${endpoint.baseUrl.trimEnd('/')}/chat/completions"
         val messages = JSONArray()
@@ -163,6 +259,18 @@ class OkHttpAiGateway(
                 put("role", "system")
                 put("content", request.systemPrompt)
             })
+        }
+        request.conversationHistory.forEach { msg ->
+            val role = when (msg.role.lowercase()) {
+                "assistant", "model" -> "assistant"
+                else -> "user"
+            }
+            if (msg.content.isNotBlank()) {
+                messages.put(JSONObject().apply {
+                    put("role", role)
+                    put("content", msg.content)
+                })
+            }
         }
         val userContent: Any = if (!request.imageBase64.isNullOrBlank()) {
             JSONArray().apply {
@@ -228,6 +336,27 @@ class OkHttpAiGateway(
             request.userPrompt
         }
 
+        val messages = JSONArray()
+        request.conversationHistory.forEach { msg ->
+            val role = if (msg.role.equals("assistant", ignoreCase = true) ||
+                msg.role.equals("model", ignoreCase = true)
+            ) {
+                "assistant"
+            } else {
+                "user"
+            }
+            if (msg.content.isNotBlank()) {
+                messages.put(JSONObject().apply {
+                    put("role", role)
+                    put("content", msg.content)
+                })
+            }
+        }
+        messages.put(JSONObject().apply {
+            put("role", "user")
+            put("content", userContent)
+        })
+
         val payload = JSONObject().apply {
             put("model", endpoint.model)
             put("max_tokens", request.maxTokens)
@@ -235,12 +364,7 @@ class OkHttpAiGateway(
             if (request.systemPrompt.isNotBlank()) {
                 put("system", request.systemPrompt)
             }
-            put("messages", JSONArray().apply {
-                put(JSONObject().apply {
-                    put("role", "user")
-                    put("content", userContent)
-                })
-            })
+            put("messages", messages)
         }
 
         return Request.Builder()
@@ -314,7 +438,17 @@ class OkHttpAiGateway(
         )
     }
 
-    private fun classifyHttpError(code: Int, body: String, providerName: String): AiGatewayException {
+    private fun parseRetryAfterMs(headerValue: String?): Long? {
+        val seconds = headerValue?.trim()?.toLongOrNull() ?: return null
+        return if (seconds > 0L) seconds * 1000L else null
+    }
+
+    private fun classifyHttpError(
+        code: Int,
+        body: String,
+        providerName: String,
+        retryAfterMs: Long? = null
+    ): AiGatewayException {
         val extractedMessage = runCatching {
             val json = JSONObject(body)
             json.optJSONObject("error")?.optString("message")
@@ -335,7 +469,8 @@ class OkHttpAiGateway(
             429 -> AiGatewayException(
                 kind = AiErrorKind.QUOTA_EXCEEDED,
                 message = "Quota ou limite de débit atteinte sur $providerName ($extractedMessage)",
-                httpCode = code
+                httpCode = code,
+                retryAfterMs = retryAfterMs
             )
             in 500..599 -> AiGatewayException(
                 kind = AiErrorKind.SERVER_ERROR,

@@ -159,7 +159,8 @@ fun ForgeAppRoot() {
                 ToolsViewModel(
                     toolRepository = app.container.toolRepository,
                     runtime = app.container.sandboxedToolRuntime,
-                    preferencesRepository = app.container.preferencesRepository
+                    preferencesRepository = app.container.preferencesRepository,
+                    multiAgentPipeline = app.container.multiAgentForgePipeline
                 )
             }
         }

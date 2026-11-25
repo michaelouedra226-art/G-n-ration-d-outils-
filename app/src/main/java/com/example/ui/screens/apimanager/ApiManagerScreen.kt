@@ -21,6 +21,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Edit
@@ -43,6 +44,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -75,6 +77,8 @@ fun ApiManagerScreen(
     val providers by viewModel.providers.collectAsStateWithLifecycle()
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val testingKeyIds by viewModel.testingKeyIds.collectAsStateWithLifecycle()
+    val discoveringProviderId by viewModel.discoveringProviderId.collectAsStateWithLifecycle()
+    val discoveredModels by viewModel.discoveredModels.collectAsStateWithLifecycle()
     val testBanner by viewModel.lastTestBanner.collectAsStateWithLifecycle()
     val formError by viewModel.formError.collectAsStateWithLifecycle()
 
@@ -202,6 +206,8 @@ fun ApiManagerScreen(
                     ProviderCard(
                         pwk = pwk,
                         testingKeyIds = testingKeyIds,
+                        isDiscoveringModels = discoveringProviderId == pwk.provider.id,
+                        onDiscoverModels = { viewModel.discoverModels(pwk) },
                         onToggleProvider = { enabled ->
                             viewModel.setProviderEnabled(pwk.provider.id, enabled)
                         },
@@ -269,12 +275,25 @@ fun ApiManagerScreen(
             }
         )
     }
+    discoveredModels?.let { (targetProvider, availableModels) ->
+        DiscoveredModelsDialog(
+            providerName = targetProvider.provider.name,
+            currentCsv = targetProvider.provider.modelPriorityCsv,
+            availableModels = availableModels,
+            onDismiss = viewModel::dismissDiscoveredModels,
+            onApply = { chosen ->
+                viewModel.applyDiscoveredModels(targetProvider, chosen)
+            }
+        )
+    }
 }
 
 @Composable
 private fun ProviderCard(
     pwk: ProviderWithKeys,
     testingKeyIds: Set<String>,
+    isDiscoveringModels: Boolean,
+    onDiscoverModels: () -> Unit,
     onToggleProvider: (Boolean) -> Unit,
     onEditProvider: () -> Unit,
     onDeleteProvider: () -> Unit,
@@ -343,7 +362,22 @@ private fun ProviderCard(
                 Spacer(modifier = Modifier.size(6.dp))
                 Text("Ajouter une clé (${pwk.keys.size})")
             }
-            Row {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(
+                    onClick = onDiscoverModels,
+                    enabled = !isDiscoveringModels && pwk.keys.isNotEmpty() &&
+                        providerType.protocol != ProviderProtocol.FIREBASE_AI_PLACEHOLDER,
+                    modifier = Modifier.testTag("discover_models_${provider.id}")
+                ) {
+                    if (isDiscoveringModels) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                    } else {
+                        Icon(
+                            Icons.Outlined.AutoAwesome,
+                            contentDescription = "Découvrir les modèles (/models)"
+                        )
+                    }
+                }
                 IconButton(onClick = onEditProvider) {
                     Icon(Icons.Outlined.Edit, contentDescription = "Modifier le fournisseur")
                 }
@@ -646,6 +680,86 @@ private fun AddApiKeyDialog(
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("Annuler") }
+        }
+    )
+}
+
+@Composable
+private fun DiscoveredModelsDialog(
+    providerName: String,
+    currentCsv: String,
+    availableModels: List<String>,
+    onDismiss: () -> Unit,
+    onApply: (List<String>) -> Unit
+) {
+    var filterQuery by remember { mutableStateOf("") }
+    val initialSelected = remember(currentCsv) {
+        currentCsv.split(",").map { it.trim() }.filter { it.isNotBlank() }
+    }
+    val selectedModels = remember(availableModels) {
+        mutableStateListOf<String>().apply {
+            addAll(initialSelected.filter { it in availableModels }.ifEmpty { availableModels.take(3) })
+        }
+    }
+    val filtered = remember(filterQuery, availableModels) {
+        if (filterQuery.isBlank()) availableModels.take(40)
+        else availableModels.filter { it.contains(filterQuery, ignoreCase = true) }.take(40)
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Modèles détectés — $providerName") },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "${availableModels.size} modèle(s) renvoyé(s) par GET /models. Sélectionnez ceux à prioriser :",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                OutlinedTextField(
+                    value = filterQuery,
+                    onValueChange = { filterQuery = it },
+                    label = { Text("Filtrer les modèles...") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                filtered.forEach { modelId ->
+                    val checked = modelId in selectedModels
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Checkbox(
+                            checked = checked,
+                            onCheckedChange = { isChecked ->
+                                if (isChecked && !checked) selectedModels.add(modelId)
+                                else if (!isChecked) selectedModels.remove(modelId)
+                            }
+                        )
+                        Text(
+                            text = modelId,
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFontFamily)
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onApply(selectedModels.toList()) },
+                enabled = selectedModels.isNotEmpty()
+            ) {
+                Text("Appliquer (${selectedModels.size})")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Fermer") }
         }
     )
 }

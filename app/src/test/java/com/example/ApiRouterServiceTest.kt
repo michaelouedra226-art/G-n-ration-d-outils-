@@ -67,7 +67,14 @@ class ApiRouterServiceTest {
         val fakeGateway = object : AiGateway {
             override suspend fun complete(request: AiRequest, endpoint: ResolvedEndpoint): Result<AiResponse> {
                 return if (endpoint.keyId == key1.id) {
-                    Result.failure(AiGatewayException(AiErrorKind.QUOTA_EXCEEDED, "Rate limit 429", 429))
+                    Result.failure(
+                        AiGatewayException(
+                            kind = AiErrorKind.QUOTA_EXCEEDED,
+                            message = "Rate limit 429",
+                            httpCode = 429,
+                            retryAfterMs = 45_000L
+                        )
+                    )
                 } else {
                     Result.success(
                         AiResponse(
@@ -84,6 +91,9 @@ class ApiRouterServiceTest {
 
             override suspend fun testConnection(endpoint: ResolvedEndpoint): ConnectionTestResult =
                 ConnectionTestResult(true, 100L, "OK")
+
+            override suspend fun fetchAvailableModels(endpoint: ResolvedEndpoint): Result<List<String>> =
+                Result.success(listOf("gpt-4o", "gpt-4o-mini"))
         }
 
         val router = ApiRouterService(apiRepo, fakeGateway)
@@ -96,7 +106,44 @@ class ApiRouterServiceTest {
         assertEquals("Clé 2", result.getOrThrow().keyLabel)
         val updatedSnapshot = apiRepo.getProvidersSnapshot().first().keys.associateBy { it.id }
         assertEquals(1L, updatedSnapshot[key1.id]?.totalErrors)
+        assertEquals("Quota / 429 (45s)", updatedSnapshot[key1.id]?.lastStatus)
+        assertTrue((updatedSnapshot[key1.id]?.quotaResetAtEpochMs ?: 0L) > System.currentTimeMillis())
         assertEquals(1L, updatedSnapshot[key2.id]?.totalRequests)
         assertEquals(42L, updatedSnapshot[key2.id]?.totalTokens)
+    }
+
+    @Test
+    fun `fetchAvailableModels uses highest priority enabled key`() = runTest {
+        val provider = apiRepo.addProvider(
+            name = "OpenRouter",
+            providerType = ProviderType.OPENROUTER,
+            baseUrl = "https://openrouter.ai/api/v1",
+            modelPriority = listOf("openai/gpt-4o-mini"),
+            priority = 1
+        ).getOrThrow()
+
+        apiRepo.addApiKey(provider.id, "Clé secondaire", "sk-secondary-222222", priority = 2).getOrThrow()
+        apiRepo.addApiKey(provider.id, "Clé principale", "sk-primary-11111111", priority = 1).getOrThrow()
+
+        var usedKeyLabel: String? = null
+        val gateway = object : AiGateway {
+            override suspend fun complete(request: AiRequest, endpoint: ResolvedEndpoint) =
+                Result.failure<AiResponse>(IllegalStateException("Unused"))
+
+            override suspend fun testConnection(endpoint: ResolvedEndpoint) =
+                ConnectionTestResult(true, 50L, "OK")
+
+            override suspend fun fetchAvailableModels(endpoint: ResolvedEndpoint): Result<List<String>> {
+                usedKeyLabel = endpoint.keyLabel
+                return Result.success(listOf("anthropic/claude-3.5-sonnet", "openai/gpt-4o-mini"))
+            }
+        }
+
+        val router = ApiRouterService(apiRepo, gateway)
+        val modelsResult = router.fetchAvailableModels(provider.id)
+
+        assertTrue(modelsResult.isSuccess)
+        assertEquals("Clé principale", usedKeyLabel)
+        assertEquals(listOf("anthropic/claude-3.5-sonnet", "openai/gpt-4o-mini"), modelsResult.getOrThrow())
     }
 }

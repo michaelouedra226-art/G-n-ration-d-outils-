@@ -90,6 +90,14 @@ enum class LoadBalancingStrategy(val label: String, val description: String) {
 }
 
 /**
+ * Single conversation message for multi-turn chat plugins.
+ */
+data class AiMessage(
+    val role: String,
+    val content: String
+)
+
+/**
  * Normalized AI completion request passed to [AiGateway].
  */
 data class AiRequest(
@@ -100,7 +108,8 @@ data class AiRequest(
     val maxTokens: Int = 2048,
     val jsonMode: Boolean = false,
     val imageBase64: String? = null,
-    val imageMimeType: String = "image/jpeg"
+    val imageMimeType: String = "image/jpeg",
+    val conversationHistory: List<AiMessage> = emptyList()
 )
 
 /**
@@ -158,5 +167,6 @@ class AiGatewayException(
     val kind: AiErrorKind,
     override val message: String,
     val httpCode: Int? = null,
+    val retryAfterMs: Long? = null,
     cause: Throwable? = null
 ) : Exception(message, cause)

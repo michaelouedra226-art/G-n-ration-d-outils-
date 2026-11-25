@@ -2,6 +2,10 @@ package com.example.ui.screens.tools
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.core.ai.AgentLogItem
+import com.example.core.ai.AiMessage
+import com.example.core.ai.ForgePipelineEvent
+import com.example.core.ai.MultiAgentForgePipeline
 import com.example.core.data.local.ToolChangelogEntity
 import com.example.core.data.local.ToolExecutionLogEntity
 import com.example.core.data.local.ToolStorageEntryEntity
@@ -11,6 +15,7 @@ import com.example.core.data.repository.InstalledTool
 import com.example.core.data.repository.ToolRepository
 import com.example.domain.manifest.ToolCategory
 import com.example.domain.manifest.ToolStatus
+import com.example.domain.manifest.UiOutputType
 import com.example.runtime.SandboxedToolRuntime
 import com.example.runtime.ToolExecutionResult
 import kotlinx.coroutines.CancellationException
@@ -22,10 +27,18 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
+sealed interface RefineToolState {
+    data object Idle : RefineToolState
+    data class Running(val logs: List<AgentLogItem>, val providerInfo: String) : RefineToolState
+    data class Success(val newVersion: String) : RefineToolState
+    data class Error(val message: String) : RefineToolState
+}
+
 class ToolsViewModel(
     private val toolRepository: ToolRepository,
     private val runtime: SandboxedToolRuntime,
-    private val preferencesRepository: AppPreferencesRepository
+    private val preferencesRepository: AppPreferencesRepository,
+    private val multiAgentPipeline: MultiAgentForgePipeline? = null
 ) : ViewModel() {
 
     private val _searchQuery = MutableStateFlow("")
@@ -81,7 +94,19 @@ class ToolsViewModel(
     private val _executionResult = MutableStateFlow<ToolExecutionResult?>(null)
     val executionResult: StateFlow<ToolExecutionResult?> = _executionResult.asStateFlow()
 
+    private val _chatHistory = MutableStateFlow<List<AiMessage>>(emptyList())
+    val chatHistory: StateFlow<List<AiMessage>> = _chatHistory.asStateFlow()
+
+    private val _refineState = MutableStateFlow<RefineToolState>(RefineToolState.Idle)
+    val refineState: StateFlow<RefineToolState> = _refineState.asStateFlow()
+
     fun clearExecutionResult() {
+        _executionResult.value = null
+        _chatHistory.value = emptyList()
+    }
+
+    fun clearChatHistory() {
+        _chatHistory.value = emptyList()
         _executionResult.value = null
     }
 
@@ -90,18 +115,91 @@ class ToolsViewModel(
             _isExecuting.value = true
             try {
                 val currentSettings = settings.value
+                val isChatPlugin = tool.manifest.outputs.any { it.type == UiOutputType.CHAT_TRANSCRIPT } ||
+                    tool.manifest.category == ToolCategory.AI_ASSISTANT
+                val historyToSend = if (isChatPlugin) _chatHistory.value else emptyList()
+
                 val res = runtime.execute(
                     manifest = tool.manifest,
                     rawInputs = inputs,
                     strategy = currentSettings.loadBalancingStrategy,
-                    globalTimeoutMs = currentSettings.sandboxTimeoutMs
+                    globalTimeoutMs = currentSettings.sandboxTimeoutMs,
+                    conversationHistory = historyToSend
                 )
                 _executionResult.value = res
+
+                if (res.success && isChatPlugin) {
+                    val userText = inputs.values.firstOrNull { it.isNotBlank() }.orEmpty()
+                    val chatOutputId = tool.manifest.outputs
+                        .firstOrNull { it.type == UiOutputType.CHAT_TRANSCRIPT }?.id
+                        ?: tool.manifest.outputs.firstOrNull()?.id
+                    val assistantText = chatOutputId?.let { res.outputs[it] }.orEmpty()
+                    if (userText.isNotBlank() && assistantText.isNotBlank()) {
+                        _chatHistory.value = (_chatHistory.value + listOf(
+                            AiMessage(role = "user", content = userText),
+                            AiMessage(role = "assistant", content = assistantText)
+                        )).takeLast(20)
+                    }
+                }
             } catch (e: CancellationException) {
                 throw e
             } finally {
                 _isExecuting.value = false
             }
+        }
+    }
+
+    fun refineToolWithAi(tool: InstalledTool, modificationPrompt: String) {
+        val pipeline = multiAgentPipeline ?: return
+        val cleanPrompt = modificationPrompt.trim()
+        if (cleanPrompt.isBlank()) {
+            _refineState.value = RefineToolState.Error("Décrivez la modification souhaitée.")
+            return
+        }
+        viewModelScope.launch {
+            val currentSettings = settings.value
+            pipeline.refineTool(
+                existingManifest = tool.manifest,
+                modificationPrompt = cleanPrompt,
+                authorName = currentSettings.authorName,
+                strategy = currentSettings.loadBalancingStrategy
+            ).collect { event ->
+                when (event) {
+                    is ForgePipelineEvent.Progress -> {
+                        _refineState.value = RefineToolState.Running(event.logs, event.providerInfo)
+                    }
+                    is ForgePipelineEvent.Failure -> {
+                        _refineState.value = RefineToolState.Error(event.errorMessage)
+                    }
+                    is ForgePipelineEvent.Success -> {
+                        val saveRes = toolRepository.saveTool(
+                            manifest = event.manifest,
+                            changelogSummary = cleanPrompt.take(120),
+                            changelogDetails = "Évolution IA (${event.providerInfo}, ${event.totalLatencyMs} ms)"
+                        )
+                        saveRes.fold(
+                            onSuccess = { saved ->
+                                _refineState.value = RefineToolState.Success(saved.manifest.version)
+                            },
+                            onFailure = { err ->
+                                _refineState.value = RefineToolState.Error(
+                                    err.localizedMessage ?: "Échec de sauvegarde."
+                                )
+                            }
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    fun resetRefineState() {
+        _refineState.value = RefineToolState.Idle
+    }
+
+    fun importToolFromJson(rawJson: String, onResult: (Result<InstalledTool>) -> Unit) {
+        viewModelScope.launch {
+            onResult(toolRepository.importToolFromJson(rawJson))
         }
     }
 

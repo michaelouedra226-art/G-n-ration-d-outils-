@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -50,6 +51,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -67,12 +69,20 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
+import com.example.domain.manifest.ToolPermission
 import com.example.domain.manifest.UiFieldSpec
 import com.example.domain.manifest.UiFieldType
 import com.example.domain.manifest.UiOutputType
+import com.example.ui.components.BarChartOutputView
+import com.example.ui.components.ChatTranscriptOutputView
 import com.example.ui.components.ForgeCard
 import com.example.ui.components.ForgePill
+import com.example.ui.components.KeyValueCardsOutputView
+import com.example.ui.components.ListItemsOutputView
 import com.example.ui.components.MarkdownTextView
+import com.example.ui.components.PdfPreviewCard
+import com.example.ui.components.SpeakTextButton
+import com.example.ui.components.TableOutputView
 import com.example.ui.theme.ForgeEmerald
 import com.example.ui.theme.ForgeRose
 import com.example.ui.theme.JetBrainsMonoFontFamily
@@ -97,11 +107,26 @@ fun ToolRunnerScreen(
         .collectAsStateWithLifecycle()
     val isExecuting by viewModel.isExecuting.collectAsStateWithLifecycle()
     val executionResult by viewModel.executionResult.collectAsStateWithLifecycle()
+    val chatHistory by viewModel.chatHistory.collectAsStateWithLifecycle()
 
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+
+    LaunchedEffect(executionResult) {
+        val res = executionResult
+        val manifest = toolState?.manifest
+        if (res != null && res.success && manifest != null &&
+            ToolPermission.CLIPBOARD in manifest.permissions
+        ) {
+            val primaryText = manifest.outputs.firstOrNull()?.let { res.outputs[it.id] }.orEmpty()
+            if (primaryText.isNotBlank()) {
+                clipboard.setText(AnnotatedString(primaryText))
+                snackbarHostState.showSnackbar("Résultat copié automatiquement dans le presse-papiers")
+            }
+        }
+    }
 
     val fieldValues = remember(toolId, toolState?.manifest?.version) {
         mutableStateMapOf<String, String>().apply {
@@ -148,9 +173,11 @@ fun ToolRunnerScreen(
     }
 
     Scaffold(
+        contentWindowInsets = WindowInsets(0.dp),
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
+                windowInsets = WindowInsets(0.dp),
                 title = {
                     Text(toolState?.manifest?.name ?: "Exécution Plugin")
                 },
@@ -354,6 +381,25 @@ fun ToolRunnerScreen(
                                                 )
                                             )
                                         }
+                                        UiOutputType.KEY_VALUE_CARDS -> {
+                                            KeyValueCardsOutputView(rawText = outputText)
+                                        }
+                                        UiOutputType.TABLE_VIEW -> {
+                                            TableOutputView(rawText = outputText)
+                                        }
+                                        UiOutputType.BAR_CHART -> {
+                                            BarChartOutputView(rawText = outputText)
+                                        }
+                                        UiOutputType.LIST_ITEMS -> {
+                                            ListItemsOutputView(rawText = outputText)
+                                        }
+                                        UiOutputType.CHAT_TRANSCRIPT -> {
+                                            ChatTranscriptOutputView(
+                                                messages = chatHistory,
+                                                latestReply = outputText,
+                                                onClearHistory = viewModel::clearChatHistory
+                                            )
+                                        }
                                         UiOutputType.PDF_PREVIEW_EXPORT -> {
                                             val pdf = result.pdfArtifact
                                             if (pdf != null) {
@@ -375,6 +421,8 @@ fun ToolRunnerScreen(
                                                         )
                                                     }
                                                 }
+                                                Spacer(modifier = Modifier.height(10.dp))
+                                                PdfPreviewCard(filePath = pdf.filePath)
                                                 Spacer(modifier = Modifier.height(10.dp))
                                                 FlowRow(
                                                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -418,6 +466,15 @@ fun ToolRunnerScreen(
                                         else -> {
                                             MarkdownTextView(markdown = outputText)
                                         }
+                                    }
+
+                                    val ttsPayload = result.speakableText?.takeIf { it.isNotBlank() } ?: outputText
+                                    if (ToolPermission.TEXT_TO_SPEECH in manifest.permissions &&
+                                        outputSpec.type != UiOutputType.PDF_PREVIEW_EXPORT &&
+                                        ttsPayload.isNotBlank()
+                                    ) {
+                                        Spacer(modifier = Modifier.height(10.dp))
+                                        SpeakTextButton(text = ttsPayload)
                                     }
                                 }
                             }

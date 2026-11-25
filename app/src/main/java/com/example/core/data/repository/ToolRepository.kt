@@ -127,6 +127,26 @@ class ToolRepository(
     }
 
     /**
+     * Imports a validated [ToolManifest] from an external JSON file, assigning a fresh safe ID if needed.
+     */
+    suspend fun importToolFromJson(rawJson: String): Result<InstalledTool> = runCatching {
+        val parsed = manifestAdapter.fromJson(rawJson)
+            ?: throw IllegalArgumentException("Fichier JSON non reconnu comme un manifeste ForgeAI.")
+        val existing = parsed.id.takeIf { it.isNotBlank() }?.let { toolDao.getToolById(it) }
+        val targetId = if (parsed.id.isBlank() || existing != null) {
+            "tool_${UUID.randomUUID().toString().take(8)}"
+        } else {
+            parsed.id
+        }
+        val normalized = parsed.copy(id = targetId, status = ToolStatus.ACTIVE)
+        saveTool(
+            manifest = normalized,
+            changelogSummary = "Importé depuis fichier JSON",
+            changelogDetails = "Manifeste v${normalized.version} validé par SandboxGuard"
+        ).getOrThrow()
+    }
+
+    /**
      * Updates a tool's lifecycle status (Active, Paused, Draft, Archived) and records changelog.
      */
     suspend fun updateToolStatus(toolId: String, newStatus: ToolStatus): Result<Unit> = runCatching {

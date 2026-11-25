@@ -165,4 +165,50 @@ class ApiManagerViewModel(
             }
         }
     }
+
+    private val _discoveringProviderId = MutableStateFlow<String?>(null)
+    val discoveringProviderId: StateFlow<String?> = _discoveringProviderId.asStateFlow()
+
+    private val _discoveredModels = MutableStateFlow<Pair<ProviderWithKeys, List<String>>?>(null)
+    val discoveredModels: StateFlow<Pair<ProviderWithKeys, List<String>>?> = _discoveredModels.asStateFlow()
+
+    fun dismissDiscoveredModels() {
+        _discoveredModels.value = null
+    }
+
+    fun discoverModels(provider: ProviderWithKeys) {
+        viewModelScope.launch {
+            _discoveringProviderId.value = provider.provider.id
+            try {
+                apiRouterService.fetchAvailableModels(provider.provider.id).fold(
+                    onSuccess = { models ->
+                        _discoveredModels.value = provider to models
+                    },
+                    onFailure = { err ->
+                        _lastTestBanner.value = provider.provider.name to ConnectionTestResult(
+                            success = false,
+                            latencyMs = 0L,
+                            message = err.localizedMessage ?: "Impossible de lister les modèles."
+                        )
+                    }
+                )
+            } finally {
+                _discoveringProviderId.value = null
+            }
+        }
+    }
+
+    fun applyDiscoveredModels(provider: ProviderWithKeys, selectedModels: List<String>) {
+        if (selectedModels.isEmpty()) return
+        viewModelScope.launch {
+            apiManagerRepository.updateProviderConfig(
+                providerId = provider.provider.id,
+                name = provider.provider.name,
+                baseUrl = provider.provider.baseUrl,
+                modelPriority = selectedModels,
+                priority = provider.provider.priority
+            )
+            _discoveredModels.value = null
+        }
+    }
 }
