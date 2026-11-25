@@ -30,7 +30,7 @@ jobs:
         uses: android-actions/setup-android@v4
         with:
           accept-android-sdk-licenses: true
-          packages: 'platform-tools'
+          packages: 'platform-tools platforms;android-34 build-tools;34.0.0'
 
       - name: Ensure Android SDK licenses & CI debug keystore
         run: |
@@ -41,6 +41,14 @@ jobs:
               -keyalg RSA -keysize 2048 -validity 10000 \
               -dname "CN=Android Debug,O=Android,C=US"
           fi
+
+      - name: Cache Robolectric SDK Jars
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository/org/robolectric
+          key: ${{ runner.os }}-robolectric-sdk34-${{ hashFiles('gradle/libs.versions.toml', 'app/src/test/resources/robolectric.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-robolectric-sdk34-
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4

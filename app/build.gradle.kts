@@ -63,7 +63,29 @@ android {
     compose = true
     buildConfig = true
   }
-  testOptions { unitTests { isIncludeAndroidResources = true } }
+  testOptions {
+    unitTests {
+      isIncludeAndroidResources = true
+      all {
+        it.maxParallelForks = 1
+        it.systemProperty(
+          "robolectric.dependency.repo.url",
+          System.getProperty(
+            "robolectric.dependency.repo.url",
+            "https://maven-central.storage-download.googleapis.com/maven2"
+          )
+        )
+        it.systemProperty(
+          "robolectric.dependency.repo.id",
+          System.getProperty("robolectric.dependency.repo.id", "google-maven-central")
+        )
+        val localMavenRepo = System.getProperty("maven.repo.local")
+        if (!localMavenRepo.isNullOrBlank()) {
+          it.systemProperty("maven.repo.local", localMavenRepo)
+        }
+      }
+    }
+  }
   dependenciesInfo {
     includeInApk = false
     includeInBundle = true
