@@ -37,7 +37,7 @@ import org.robolectric.annotation.Config
 import java.util.concurrent.Executor
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [36])
+@Config(sdk = [34])
 class SandboxedToolRuntimeTest {
 
     private lateinit var db: ForgeDatabase
